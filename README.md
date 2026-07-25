@@ -1,54 +1,138 @@
-# poc-agendamento-baixa-boleto
+# POC — Agendamento de Baixa Automática de Boleto
 
-POC de agendamento e baixa automática de boletos via AWS SQS + EventBridge Scheduler.
-
-## Estrutura do repositório
-
-```
-poc-agendamento-baixa-boleto/
-├── app/        # Aplicação Java (Spring Boot) — a ser implementada
-└── infra/      # Infraestrutura AWS via Terraform
-```
-
----
-
-## Arquitetura (visão geral)
+## Visão Geral da Arquitetura
 
 ```
 Frontend
    │
    ▼
-[app/ — Spring Boot]
-   │  POST /agendamentos        → cria agendamento
-   │  PUT  /agendamentos/{id}   → edita data de agendamento
+[App Java — local ou ECS]
+   │  POST /api/v1/agendamentos
+   │  PATCH /api/v1/agendamentos
    │
    ▼
-┌─────────────────────────────────────────────┐
-│  SQS: agendamento-cancelamento              │  ← Fila principal
-│  Retries: 3x | Intervalo: 5 min             │
-│  DLQ: agendamento-cancelamento-dlq          │
-└─────────────────────────────────────────────┘
+[SQS: agendamento-cancelamento]  ◄── fila principal
+   │  3 tentativas · intervalo de 5 min · DLQ
    │
    ▼
-[Lambda — ouve a fila, diferencia tipo pelo campo "tipo"]
-   │  AGENDAR_CANCELAMENTO       → cria evento no EventBridge Scheduler
-   │  EDITAR_DATA_CANCELAMENTO   → atualiza evento no EventBridge Scheduler
-   │
-   ▼
-[EventBridge Scheduler — dispara na data_baixa_automatica]
-   │
-   ▼
-┌─────────────────────────────────────────────┐
-│  SQS: efetivar-cancelamento                 │  ← Fila de execução
-│  Retries: 3x | Intervalo: 1 hora            │
-│  DLQ: efetivar-cancelamento-dlq             │
-└─────────────────────────────────────────────┘
-   │
-   ▼
-[Lambda — efetiva o cancelamento via API externa]
+[Lambda — ouve a fila, lê o campo "tipo"]
+   ├── AGENDAR_CANCELAMENTO     → cria evento no EventBridge Scheduler
+   └── EDITAR_DATA_CANCELAMENTO → atualiza evento no EventBridge Scheduler
+                                          │
+                                          ▼ (na data agendada)
+                               [SQS: efetivar-cancelamento]
+                                          │  3 tentativas · intervalo de 1h · DLQ
+                                          │
+                                          ▼
+                               [Lambda — chama API externa p/ cancelar o boleto]
 ```
 
-### Payload da fila principal
+## Estrutura do Repositório
+
+```
+├── app/          → Aplicação Java (Spring Boot)
+└── infra/        → Infraestrutura AWS (Terraform)
+```
+
+---
+
+## Pré-requisitos
+
+| Ferramenta | Versão mínima |
+|------------|---------------|
+| Java       | 21            |
+| Maven      | 3.9+          |
+| Terraform  | 1.5+          |
+| AWS CLI    | 2.x           |
+
+---
+
+## 1 — Configurar credenciais AWS localmente
+
+Configure o AWS CLI com um usuário/role que tenha permissão para criar filas SQS:
+
+```bash
+aws configure
+# AWS Access Key ID: <sua_access_key>
+# AWS Secret Access Key: <sua_secret_key>
+# Default region name: sa-east-1
+# Default output format: json
+```
+
+---
+
+## 2 — Provisionar as filas SQS na AWS (Terraform)
+
+```bash
+cd infra
+
+terraform init
+terraform plan -var-file="terraform.tfvars"
+terraform apply -var-file="terraform.tfvars"
+```
+
+Após o apply, copie a URL da fila principal exibida no output:
+
+```
+Outputs:
+  agendamento_cancelamento_queue_url = "https://sqs.sa-east-1.amazonaws.com/123456789012/poc-agendamento-baixa-boleto-dev-agendamento-cancelamento"
+```
+
+---
+
+## 3 — Rodar a aplicação Java localmente
+
+Defina a variável de ambiente com a URL copiada acima e suba a app:
+
+**Windows (PowerShell):**
+```powershell
+$env:SQS_AGENDAMENTO_CANCELAMENTO_URL = "https://sqs.sa-east-1.amazonaws.com/123456789012/poc-agendamento-baixa-boleto-dev-agendamento-cancelamento"
+cd app
+./mvnw spring-boot:run
+```
+
+**Linux / macOS:**
+```bash
+export SQS_AGENDAMENTO_CANCELAMENTO_URL="https://sqs.sa-east-1.amazonaws.com/..."
+cd app
+./mvnw spring-boot:run
+```
+
+A aplicação sobe em `http://localhost:8080`.
+
+---
+
+## 4 — Endpoints
+
+### Criar agendamento de cancelamento
+```http
+POST /api/v1/agendamentos
+Content-Type: application/json
+
+{
+  "id_boleto_individual": "550e8400-e29b-41d4-a716-446655440000",
+  "data_baixa_automatica": "2026-08-10"
+}
+```
+**Response:** `201 Created`
+
+---
+
+### Editar data de cancelamento
+```http
+PATCH /api/v1/agendamentos
+Content-Type: application/json
+
+{
+  "id_boleto_individual": "550e8400-e29b-41d4-a716-446655440000",
+  "data_baixa_automatica": "2026-09-15"
+}
+```
+**Response:** `200 OK`
+
+---
+
+## Payload enviado para a fila SQS
 
 ```json
 {
@@ -58,55 +142,18 @@ Frontend
 }
 ```
 
-**Valores possíveis para `tipo`:**
+O campo `tipo` pode ser:
 - `AGENDAR_CANCELAMENTO`
 - `EDITAR_DATA_CANCELAMENTO`
 
 ---
 
-## Infra — SQS
+## Filas SQS — Estratégia de Retry
 
-### Pré-requisitos
+| Fila                         | Tentativas | Intervalo   | DLQ | Retenção DLQ |
+|------------------------------|-----------|-------------|-----|--------------|
+| `agendamento-cancelamento`   | 3         | 5 minutos   | ✅  | 14 dias      |
+| `efetivar-cancelamento`      | 3         | 1 hora      | ✅  | 14 dias      |
 
-- [Terraform >= 1.5](https://developer.hashicorp.com/terraform/install)
-- AWS CLI configurado (`aws configure`)
-
-### Deploy
-
-```bash
-cd infra
-
-# Inicializa os providers
-terraform init
-
-# Visualiza o plano de execução
-terraform plan
-
-# Aplica a infraestrutura
-terraform apply
-```
-
-### Recursos criados
-
-| Recurso | Nome (dev) |
-|---|---|
-| Fila principal | `poc-agendamento-baixa-boleto-dev-agendamento-cancelamento` |
-| DLQ da fila principal | `poc-agendamento-baixa-boleto-dev-agendamento-cancelamento-dlq` |
-| Fila de cancelamento | `poc-agendamento-baixa-boleto-dev-efetivar-cancelamento` |
-| DLQ da fila de cancelamento | `poc-agendamento-baixa-boleto-dev-efetivar-cancelamento-dlq` |
-
-### Configurações de retry
-
-| Fila | Visibility Timeout | Max Receive Count | Comportamento |
-|---|---|---|---|
-| agendamento-cancelamento | 300s (5 min) | 3 | Após 3 falhas → DLQ |
-| efetivar-cancelamento | 3600s (1 hora) | 3 | Após 3 falhas → DLQ |
-
-> **Como funciona o retry no SQS:** o consumidor precisa deletar a mensagem após processá-la com sucesso. Se não deletar dentro do `visibility_timeout`, a mensagem fica visível novamente para reprocessamento. Após `maxReceiveCount` tentativas, vai para a DLQ.
-
----
-
-## App — Java / Spring Boot
-
-> A ser implementado nos próximos passos.
+> O intervalo é controlado pelo `visibility_timeout_seconds` da fila. O consumer (Lambda) **não deve** deletar a mensagem em caso de falha — ela volta automaticamente para a fila após o timeout.
 

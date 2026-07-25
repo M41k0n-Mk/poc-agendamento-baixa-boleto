@@ -1,0 +1,18 @@
+spring:
+  application:
+    name: agendamento-baixa-boleto
+
+server:
+  port: 8080
+
+# Spring Cloud AWS — usa automaticamente as credenciais do AWS CLI (~/.aws/credentials)
+# ou variáveis de ambiente AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+spring.cloud.aws:
+  region:
+    static: sa-east-1
+
+app:
+  sqs:
+    # Cole aqui a URL da fila após o `terraform apply`, ou injete via variável de ambiente.
+    # Exemplo: https://sqs.sa-east-1.amazonaws.com/123456789012/poc-agendamento-baixa-boleto-dev-agendamento-cancelamento
+    agendamento-cancelamento-queue-url: "https://sqs.sa-east-1.amazonaws.com/478966647597/poc-agendamento-baixa-boleto-dev-agendamento-cancelamento"
