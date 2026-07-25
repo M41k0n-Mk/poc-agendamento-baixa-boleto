@@ -1,0 +1,5 @@
+# boto3 já está disponível no runtime Python da AWS Lambda.
+# Nenhuma dependência externa é necessária para este Lambda.
+# Se precisar de libs extras no futuro, liste-as aqui e rode:
+#   pip install -r requirements.txt -t ./package
+

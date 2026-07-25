@@ -1,0 +1,4 @@
+# Sem dependências externas — boto3 e urllib já estão disponíveis no runtime Python da AWS Lambda.
+# Quando a chamada à API externa for implementada, adicione libs aqui se necessário.
+# Ex: requests==2.32.3
+

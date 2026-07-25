@@ -21,3 +21,9 @@ variable "project" {
   default     = "poc-agendamento-baixa-boleto"
 }
 
+variable "api_cancelamento_url" {
+  description = "URL da API externa que efetiva o cancelamento do boleto. Deixar vazio até a API estar disponível."
+  type        = string
+  default     = ""
+}
+
